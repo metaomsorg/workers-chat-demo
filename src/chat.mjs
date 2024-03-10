@@ -33,7 +33,6 @@
 //
 // This worker, when deployed, must be configured with two environment bindings:
 // * rooms: A Durable Object namespace binding mapped to the ChatRoom class.
-// * limiters: A Durable Object namespace binding mapped to the RateLimiter class.
 //
 // Incidentally, in pre-modules Workers syntax, "bindings" (like KV bindings, secrets, etc.)
 // appeared in your script as global variables, but in the new modules syntax, this is no longer
@@ -206,7 +205,7 @@ async function handleApiRequest(path, request, env) {
 // ChatRoom implements a Durable Object that coordinates an individual chat room. Participants
 // connect to the room using WebSockets, and the room broadcasts messages from each participant
 // to all others.
-export class ChatRoom {
+export class Room {
   constructor(state, env) {
     this.state = state
 
@@ -224,19 +223,11 @@ export class ChatRoom {
       // so get previously serialized metadata for any existing WebSockets.
       let meta = webSocket.deserializeAttachment();
 
-      // Set up our rate limiter client.
-      // The client itself can't have been in the attachment, because structured clone doesn't work on functions.
-      // DO ids aren't cloneable, restore the ID from its hex string
-      let limiterId = this.env.limiters.idFromString(meta.limiterId);
-      let limiter = new RateLimiterClient(
-        () => this.env.limiters.get(limiterId),
-        err => webSocket.close(1011, err.stack));
-
       // We don't send any messages to the client until it has sent us the initial user info
       // message. Until then, we will queue messages in `session.blockedMessages`.
       // This could have been arbitrarily large, so we won't put it in the attachment.
       let blockedMessages = [];
-      this.sessions.set(webSocket, { ...meta, limiter, blockedMessages });
+      this.sessions.set(webSocket, { ...meta, blockedMessages });
     });
 
     // We keep track of the last-seen message's timestamp just so that we can assign monotonically
@@ -291,16 +282,9 @@ export class ChatRoom {
     // WebSocket in JavaScript, not sending it elsewhere.
     this.state.acceptWebSocket(webSocket);
 
-    // Set up our rate limiter client.
-    let limiterId = this.env.limiters.idFromName(ip);
-    let limiter = new RateLimiterClient(
-        () => this.env.limiters.get(limiterId),
-        err => webSocket.close(1011, err.stack));
 
     // Create our session and add it to the sessions map.
-    let session = { limiterId, limiter, blockedMessages: [] };
-    // attach limiterId to the webSocket so it survives hibernation
-    webSocket.serializeAttachment({ ...webSocket.deserializeAttachment(), limiterId: limiterId.toString() });
+    let session = { blockedMessages: [] };
     this.sessions.set(webSocket, session);
 
     // Queue "join" messages for all online users, to populate the client's roster.
@@ -330,14 +314,6 @@ export class ChatRoom {
         // throw, and whatever, at least we won't accept the message. (This probably can't
         // actually happen. This is defensive coding.)
         webSocket.close(1011, "WebSocket broken.");
-        return;
-      }
-
-      // Check if the user is over their rate limit and reject the message if so.
-      if (!session.limiter.checkLimit()) {
-        webSocket.send(JSON.stringify({
-          error: "Your IP is being rate-limited, please try again later."
-        }));
         return;
       }
 
@@ -453,113 +429,5 @@ export class ChatRoom {
         this.broadcast({quit: quitter.name});
       }
     });
-  }
-}
-
-// =======================================================================================
-// The RateLimiter Durable Object class.
-
-// RateLimiter implements a Durable Object that tracks the frequency of messages from a particular
-// source and decides when messages should be dropped because the source is sending too many
-// messages.
-//
-// We utilize this in ChatRoom, above, to apply a per-IP-address rate limit. These limits are
-// global, i.e. they apply across all chat rooms, so if a user spams one chat room, they will find
-// themselves rate limited in all other chat rooms simultaneously.
-export class RateLimiter {
-  constructor(state, env) {
-    // Timestamp at which this IP will next be allowed to send a message. Start in the distant
-    // past, i.e. the IP can send a message now.
-    this.nextAllowedTime = 0;
-  }
-
-  // Our protocol is: POST when the IP performs an action, or GET to simply read the current limit.
-  // Either way, the result is the number of seconds to wait before allowing the IP to perform its
-  // next action.
-  async fetch(request) {
-    return await handleErrors(request, async () => {
-      let now = Date.now() / 1000;
-
-      this.nextAllowedTime = Math.max(now, this.nextAllowedTime);
-
-      if (request.method == "POST") {
-        // POST request means the user performed an action.
-        // We allow one action per 5 seconds.
-        this.nextAllowedTime += 5;
-      }
-
-      // Return the number of seconds that the client needs to wait.
-      //
-      // We provide a "grace" period of 20 seconds, meaning that the client can make 4-5 requests
-      // in a quick burst before they start being limited.
-      let cooldown = Math.max(0, this.nextAllowedTime - now - 20);
-      return new Response(cooldown);
-    })
-  }
-}
-
-// RateLimiterClient implements rate limiting logic on the caller's side.
-class RateLimiterClient {
-  // The constructor takes two functions:
-  // * getLimiterStub() returns a new Durable Object stub for the RateLimiter object that manages
-  //   the limit. This may be called multiple times as needed to reconnect, if the connection is
-  //   lost.
-  // * reportError(err) is called when something goes wrong and the rate limiter is broken. It
-  //   should probably disconnect the client, so that they can reconnect and start over.
-  constructor(getLimiterStub, reportError) {
-    this.getLimiterStub = getLimiterStub;
-    this.reportError = reportError;
-
-    // Call the callback to get the initial stub.
-    this.limiter = getLimiterStub();
-
-    // When `inCooldown` is true, the rate limit is currently applied and checkLimit() will return
-    // false.
-    this.inCooldown = false;
-  }
-
-  // Call checkLimit() when a message is received to decide if it should be blocked due to the
-  // rate limit. Returns `true` if the message should be accepted, `false` to reject.
-  checkLimit() {
-    if (this.inCooldown) {
-      return false;
-    }
-    this.inCooldown = true;
-    this.callLimiter();
-    return true;
-  }
-
-  // callLimiter() is an internal method which talks to the rate limiter.
-  async callLimiter() {
-    try {
-      let response;
-      try {
-        // Currently, fetch() needs a valid URL even though it's not actually going to the
-        // internet. We may loosen this in the future to accept an arbitrary string. But for now,
-        // we have to provide a dummy URL that will be ignored at the other end anyway.
-        response = await this.limiter.fetch("https://dummy-url", {method: "POST"});
-      } catch (err) {
-        // `fetch()` threw an exception. This is probably because the limiter has been
-        // disconnected. Stubs implement E-order semantics, meaning that calls to the same stub
-        // are delivered to the remote object in order, until the stub becomes disconnected, after
-        // which point all further calls fail. This guarantee makes a lot of complex interaction
-        // patterns easier, but it means we must be prepared for the occasional disconnect, as
-        // networks are inherently unreliable.
-        //
-        // Anyway, get a new limiter and try again. If it fails again, something else is probably
-        // wrong.
-        this.limiter = this.getLimiterStub();
-        response = await this.limiter.fetch("https://dummy-url", {method: "POST"});
-      }
-
-      // The response indicates how long we want to pause before accepting more requests.
-      let cooldown = +(await response.text());
-      await new Promise(resolve => setTimeout(resolve, cooldown * 1000));
-
-      // Done waiting.
-      this.inCooldown = false;
-    } catch (err) {
-      this.reportError(err);
-    }
   }
 }
