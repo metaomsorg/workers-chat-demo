@@ -59,6 +59,7 @@
 // available for assets served this way is very limited; larger sites should continue to use Workers
 // KV to serve assets.)
 import HTML from "./index.html";
+import CSS from "./main.css";
 
 // `handleErrors()` is a little utility function that can wrap an HTTP request handler in a
 // try/catch and return errors to the client. You probably wouldn't want to use this in production
@@ -107,27 +108,11 @@ export default {
         case "api":
           // This is a request for `/api/...`, call the API handler.
           return handleApiRequest(path.slice(1), request, env);
-        case "css":
-        case "js":
-        case "media":
+        case "main.css":
 
-        const object = await env.COLLABORATOR.get(url.pathname.substring(1));
-
-        if (object === null) {
-          return new Response(`Object Not Found: ${url.pathname}`, { status: 404 });
-        }
-
-        const headers = new Headers();
-        object.writeHttpMetadata(headers);
-        headers.set('etag', object.httpEtag);
-        if (path[0] == 'js')
-        {
-          headers.set('Content-type', 'text/javascript');
-        }
-
-        return new Response(object.body, {
-          headers,
-        });
+          return new Response(CSS,
+            {headers: { "Content-Type": "text/css"}}
+          );
 
         default:
           return new Response("Not found", {status: 404});
