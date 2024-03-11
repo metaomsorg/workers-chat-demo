@@ -1,7 +1,20 @@
 name = "collaborator"
 compatibility_date = "2024-01-01"
 
-main = "src/chat.mjs"
+main = "src/messages.mjs"
+
+routes = [
+	{ pattern = "collaborate.metaomsorg.com", custom_domain = true }
+]
+
+
+[placement]
+mode = "smart"
+
+[[r2_buckets]]
+binding = 'COLLABORATOR' # <~ valid JavaScript variable name
+bucket_name = 'collaborator'
+preview_bucket_name = "collaborator-dev"
 
 [durable_objects]
 bindings = [
@@ -10,7 +23,7 @@ bindings = [
 
 [[rules]]
 type = "Data"
-globs = ["**/*.html"]
+globs = ["**/*.html", "**/*.js", "**/*.css"]
 fallthrough = false
 
 # Indicate that you want the Room class to be callable as Durable Objects.

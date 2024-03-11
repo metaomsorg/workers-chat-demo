@@ -1,7 +1,7 @@
 {
-  "name": "edge-chat-demo",
-  "description": "An edge chat service that runs on Cloudflare Workers using Durable Objects",
+  "name": "collaborator",
+  "description": "A 3D collaboration tool",
   "version": "1.0.0",
-  "module": "./src/chat.mjs",
+  "module": "./src/messages.mjs",
   "private": true
 }
