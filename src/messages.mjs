@@ -60,6 +60,7 @@
 // KV to serve assets.)
 import HTML from "./index.html";
 import CSS from "./main.css";
+import JS from "./main.js";
 
 // `handleErrors()` is a little utility function that can wrap an HTTP request handler in a
 // try/catch and return errors to the client. You probably wouldn't want to use this in production
@@ -109,9 +110,12 @@ export default {
           // This is a request for `/api/...`, call the API handler.
           return handleApiRequest(path.slice(1), request, env);
         case "main.css":
-
           return new Response(CSS,
             {headers: { "Content-Type": "text/css"}}
+          );
+        case "main.js":
+          return new Response(JS,
+            {headers: {"Content-Type": "text/javascript"}}
           );
 
         default:
@@ -308,6 +312,8 @@ export class Room {
     backlog.forEach(value => {
       session.blockedMessages.push(value);
     });
+    webSocket.send(JSON.stringify({message: "totally"}));
+    webSocket.send(JSON.stringify({spin: "totally"}));
   }
 
   async webSocketMessage(webSocket, msg) {
@@ -356,13 +362,6 @@ export class Room {
 
       // Construct sanitized message for storage and broadcast.
       data = { name: session.name, message: "" + data.message };
-
-      // Block people from sending overly long messages. This is also enforced on the client,
-      // so to trigger this the user must be bypassing the client code.
-      if (data.message.length > 256) {
-        webSocket.send(JSON.stringify({error: "Message too long."}));
-        return;
-      }
 
       // Add timestamp. Here's where this.lastTimestamp comes in -- if we receive a bunch of
       // messages at the same time (or if the clock somehow goes backwards????), we'll assign
