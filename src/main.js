@@ -28,7 +28,7 @@ function join()
     console.log(event.data);
     if (JSON.parse(event.data).message == "spin") {
       if(spinFunction)
-        spinFunction(0.01);
+        spinFunction(0.0, 0.05);
     }
   });
 }
